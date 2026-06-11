@@ -5,6 +5,9 @@ Usage:
         --ckpts unet:logs/unet_oasis1/best_model.ckpt \
                 dynunet:logs/dynunet_oasis1/best_model.ckpt \
         --config configs/unet.yaml
+
+Note: BTCV test split has no labels. For BTCV, evaluation uses the val split
+(6 labelled cases). OASIS-1 uses the test split (85 labelled cases) as usual.
 """
 
 from __future__ import annotations
@@ -15,8 +18,25 @@ import torch
 import yaml
 
 from medsegkit.data.oasis_module import OasisDataModule
+from medsegkit.data.btcv_module import BTCVDataModule
 from medsegkit.engine.seg_module import SegModule
 from medsegkit.evaluation.metrics import evaluate_model, print_comparison_table
+
+
+def build_eval_loader(cfg: dict):
+    dataset = cfg["data"].get("dataset", "oasis1")
+    data_kw = {k: v for k, v in cfg["data"].items() if k != "dataset"}
+
+    if dataset == "btcv":
+        # BTCV test split has no labels → evaluate on val split instead
+        dm = BTCVDataModule(**data_kw)
+        dm.setup(stage="fit")
+        print("[evaluate] BTCV: using val split (6 labelled cases) — test split has no labels.")
+        return dm.val_dataloader()
+
+    dm = OasisDataModule(**data_kw)
+    dm.setup(stage="test")
+    return dm.test_dataloader()
 
 
 def main():
@@ -32,9 +52,7 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    dm = OasisDataModule(**cfg["data"])
-    dm.setup(stage="test")
-    loader = dm.test_dataloader()
+    loader = build_eval_loader(cfg)
 
     results = {}
     for entry in args.ckpts:

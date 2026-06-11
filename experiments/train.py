@@ -21,6 +21,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 
 from medsegkit.data.oasis_module import OasisDataModule
+from medsegkit.data.btcv_module import BTCVDataModule
 from medsegkit.engine.seg_module import SegModule
 from medsegkit.engine.kd_module import KDModule
 
@@ -28,6 +29,13 @@ from medsegkit.engine.kd_module import KDModule
 def load_cfg(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def build_datamodule(cfg: dict):
+    dataset = cfg["data"].get("dataset", "oasis1")
+    if dataset == "btcv":
+        return BTCVDataModule(**{k: v for k, v in cfg["data"].items() if k != "dataset"})
+    return OasisDataModule(**{k: v for k, v in cfg["data"].items() if k != "dataset"})
 
 
 def build_logger(cfg: dict):
@@ -41,13 +49,13 @@ def build_logger(cfg: dict):
 
 
 def train_seg(cfg: dict, gpus: int):
-    dm = OasisDataModule(**cfg["data"])
+    dm = build_datamodule(cfg)
 
     m_cfg = cfg["model"]
     t_cfg = cfg["training"]
     module = SegModule(
-        model_name=m_cfg.pop("name"),
-        model_kwargs=m_cfg,
+        model_name=m_cfg.get("name"),
+        model_kwargs={k: v for k, v in m_cfg.items() if k != "name"},
         loss_name=t_cfg.get("loss", "dice_ce"),
         lr=t_cfg.get("lr", 1e-4),
         weight_decay=t_cfg.get("weight_decay", 1e-5),
@@ -58,7 +66,7 @@ def train_seg(cfg: dict, gpus: int):
 
 
 def train_kd(cfg: dict, gpus: int):
-    dm = OasisDataModule(**cfg["data"])
+    dm = build_datamodule(cfg)
 
     kd_cfg = cfg["kd"]
     t_cfg  = cfg["training"]
