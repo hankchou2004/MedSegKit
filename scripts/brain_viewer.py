@@ -497,7 +497,9 @@ fig.canvas.mpl_connect("scroll_event", on_scroll)
 
 # ── start ─────────────────────────────────────────────────────────────────────
 rebuild_panel()
+print("載入第一個 case，請稍候... (loading first case)", flush=True)
 load_case(current_case)
+print("完成，視窗已開啟。", flush=True)
 
 print(f"\n── Brain Viewer  [{SPLIT.upper()}]  {len(image_files)} cases ──")
 print("  ← / →   : switch case")
