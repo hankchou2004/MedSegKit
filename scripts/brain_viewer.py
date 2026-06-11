@@ -1,8 +1,11 @@
 """
 Brain Viewer — OASIS-1 / FreeSurfer 41-class aseg
 ===================================================
-Usage:
+Usage (interactive, requires display):
     python brain_viewer.py [--split train|val|test] [--dataset-root PATH]
+
+Usage (SSH / headless — save PNG):
+    python brain_viewer.py --save [--case 0] [--save-dir ./viewer_out] [--split train]
 
 Controls:
   ← / →     : switch case
@@ -18,19 +21,36 @@ Controls:
   Click     : toggle a label in the panel
 
 Crosshairs:
-  Magenta  = Sagittal X    Cyan = Coronal Y    Yellow = Axial Z
+  Magenta = Sagittal X    Cyan = Coronal Y    Yellow = Axial Z
 """
 
 import argparse
-import glob
 import json
-import os
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+
+# ── argument parsing (before matplotlib import so backend can be set) ─────────
+parser = argparse.ArgumentParser(description="Brain MRI viewer — FreeSurfer aseg 41 classes")
+parser.add_argument("--split", choices=["train", "val", "test"], default="train")
+parser.add_argument("--dataset-root", default="/home/hank/medical_segmention/dataset")
+parser.add_argument("--save", action="store_true",
+                    help="Headless mode: save PNG instead of opening GUI")
+parser.add_argument("--case", type=int, default=0,
+                    help="Case index to render in --save mode (default: 0)")
+parser.add_argument("--save-dir", default="./viewer_out",
+                    help="Output directory for saved PNGs (default: ./viewer_out)")
+args = parser.parse_args()
+
+SAVE_MODE = args.save
+
 import matplotlib
-matplotlib.use("TkAgg")   # WSLg / X11 compatible
+if SAVE_MODE:
+    matplotlib.use("Agg")
+else:
+    matplotlib.use("TkAgg")   # WSLg / X11
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import hsv_to_rgb
@@ -48,24 +68,11 @@ matplotlib.rcParams.update({
     "font.family":      "monospace",
 })
 
-# ── argument parsing ──────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Brain MRI viewer — FreeSurfer aseg 41 classes")
-parser.add_argument(
-    "--split", choices=["train", "val", "test"], default="train",
-    help="Which dataset split to view (default: train)",
-)
-parser.add_argument(
-    "--dataset-root", default="/home/hank/medical_segmention/dataset",
-    help="Path to dataset/ directory (default: /home/hank/medical_segmention/dataset)",
-)
-args = parser.parse_args()
-
-SPLIT       = args.split
+# ── paths ─────────────────────────────────────────────────────────────────────
+SPLIT        = args.split
 DATASET_ROOT = Path(args.dataset_root)
-SPLITS_JSON  = DATASET_ROOT / "splits.json"
 FS_ROOT      = DATASET_ROOT / "freesurfer"
 
-# Choose imagesTr/labelsTr vs imagesTs/labelsTs
 if SPLIT in ("train", "val"):
     image_dir = FS_ROOT / "imagesTr"
     label_dir = FS_ROOT / "labelsTr"
@@ -73,16 +80,14 @@ else:
     image_dir = FS_ROOT / "imagesTs"
     label_dir = FS_ROOT / "labelsTs"
 
-# Load subject IDs for the requested split from splits.json
-with open(SPLITS_JSON) as f:
+with open(DATASET_ROOT / "splits.json") as f:
     split_ids: list[str] = json.load(f)["splits"][SPLIT]
 
 image_files = [str(image_dir / f"{sid}_0000.nii.gz") for sid in split_ids
                if (image_dir / f"{sid}_0000.nii.gz").exists()]
-label_files = [str(label_dir / f"{sid}.nii.gz")      for sid in split_ids
+label_files = [str(label_dir / f"{sid}.nii.gz") for sid in split_ids
                if (label_dir / f"{sid}.nii.gz").exists()]
 
-# Align lengths (label may be missing for some subjects)
 if len(label_files) != len(image_files):
     label_files = [None] * len(image_files)
 
@@ -90,59 +95,57 @@ print(f"Split  : {SPLIT}")
 print(f"Images : {len(image_files)}")
 print(f"Labels : {len(label_files)}")
 
-# ── FreeSurfer aseg label dict (remapped indices 1–40) ────────────────────────
-# Source labels: [2,3,4,5,7,8,10,11,12,13,14,15,16,17,18,24,26,28,30,
-#                 41,42,43,44,46,47,49,50,51,52,53,54,58,60,62,72,78,79,81,82,85]
-# → remapped to consecutive indices 1–40 (0 = background, not shown)
+# ── FreeSurfer aseg label dict — original label values (not remapped) ─────────
+# The .nii.gz label files contain the RAW FreeSurfer aseg integers.
 LABEL_DICT = {
-    # ── Left hemisphere ──────────────────────────────
-    1:  "Left Cerebral WM",
-    2:  "Left Cerebral Cortex",
-    3:  "Left Lateral Ventricle",
-    4:  "Left Inf Lateral Ventricle",
-    5:  "Left Cerebellum WM",
-    6:  "Left Cerebellum Cortex",
-    7:  "Left Thalamus",
-    8:  "Left Caudate",
-    9:  "Left Putamen",
-    10: "Left Pallidum",
-    14: "Left Hippocampus",
-    15: "Left Amygdala",
-    17: "Left Accumbens",
-    18: "Left VentralDC",
-    19: "Left Vessel",
-    # ── Midline / bilateral ──────────────────────────
-    11: "3rd Ventricle",
-    12: "4th Ventricle",
-    13: "Brain Stem",
-    16: "CSF",
-    35: "5th Ventricle",
-    36: "WM Hypointensities",
-    37: "Non-WM Hypointensities",
-    38: "Left WM Hypointensities",
-    39: "Right WM Hypointensities",
-    40: "Optic Chiasm",
-    # ── Right hemisphere ─────────────────────────────
-    20: "Right Cerebral WM",
-    21: "Right Cerebral Cortex",
-    22: "Right Lateral Ventricle",
-    23: "Right Inf Lateral Ventricle",
-    24: "Right Cerebellum WM",
-    25: "Right Cerebellum Cortex",
-    26: "Right Thalamus",
-    27: "Right Caudate",
-    28: "Right Putamen",
-    29: "Right Pallidum",
-    30: "Right Hippocampus",
-    31: "Right Amygdala",
-    32: "Right Accumbens",
-    33: "Right VentralDC",
-    34: "Right Vessel",
+    # ── Left hemisphere ───────────────────────────────
+    2:  "Left Cerebral WM",
+    3:  "Left Cerebral Cortex",
+    4:  "Left Lateral Ventricle",
+    5:  "Left Inf Lateral Ventricle",
+    7:  "Left Cerebellum WM",
+    8:  "Left Cerebellum Cortex",
+    10: "Left Thalamus",
+    11: "Left Caudate",
+    12: "Left Putamen",
+    13: "Left Pallidum",
+    17: "Left Hippocampus",
+    18: "Left Amygdala",
+    26: "Left Accumbens",
+    28: "Left VentralDC",
+    30: "Left Vessel",
+    # ── Midline / bilateral ───────────────────────────
+    14: "3rd Ventricle",
+    15: "4th Ventricle",
+    16: "Brain Stem",
+    24: "CSF",
+    72: "5th Ventricle",
+    78: "WM Hypointensities",
+    79: "Non-WM Hypointensities",
+    81: "Left WM Hypointensities",
+    82: "Right WM Hypointensities",
+    85: "Optic Chiasm",
+    # ── Right hemisphere ──────────────────────────────
+    41: "Right Cerebral WM",
+    42: "Right Cerebral Cortex",
+    43: "Right Lateral Ventricle",
+    44: "Right Inf Lateral Ventricle",
+    46: "Right Cerebellum WM",
+    47: "Right Cerebellum Cortex",
+    49: "Right Thalamus",
+    50: "Right Caudate",
+    51: "Right Putamen",
+    52: "Right Pallidum",
+    53: "Right Hippocampus",
+    54: "Right Amygdala",
+    58: "Right Accumbens",
+    60: "Right VentralDC",
+    62: "Right Vessel",
 }
 
-_LEFT_KEYS    = [1,2,3,4,5,6,7,8,9,10,14,15,17,18,19]
-_MIDLINE_KEYS = [11,12,13,16,35,36,37,38,39,40]
-_RIGHT_KEYS   = [20,21,22,23,24,25,26,27,28,29,30,31,32,33,34]
+_LEFT_KEYS    = [2, 3, 4, 5, 7, 8, 10, 11, 12, 13, 17, 18, 26, 28, 30]
+_MIDLINE_KEYS = [14, 15, 16, 24, 72, 78, 79, 81, 82, 85]
+_RIGHT_KEYS   = [41, 42, 43, 44, 46, 47, 49, 50, 51, 52, 53, 54, 58, 60, 62]
 
 PANEL_ORDER = []
 for g_name, g_keys in [("LEFT", _LEFT_KEYS), ("MIDLINE", _MIDLINE_KEYS), ("RIGHT", _RIGHT_KEYS)]:
@@ -155,11 +158,11 @@ N_HEADERS = 3
 
 # perceptually-spread palette via golden-angle hue
 COLORS: dict[int, np.ndarray] = {}
-for lbl in LABEL_DICT:
-    h = (lbl * 137.508) % 360 / 360.0
-    s = min(0.65 + (lbl % 5) * 0.06, 1.0)
-    v = min(0.82 + (lbl % 3) * 0.05, 1.0)
-    COLORS[lbl] = hsv_to_rgb([h, s, v])
+for _lbl in LABEL_DICT:
+    h = (_lbl * 137.508) % 360 / 360.0
+    s = min(0.65 + (_lbl % 5) * 0.06, 1.0)
+    v = min(0.82 + (_lbl % 3) * 0.05, 1.0)
+    COLORS[_lbl] = hsv_to_rgb([h, s, v])
 
 # ── viewer state ──────────────────────────────────────────────────────────────
 current_case  = 0
@@ -185,10 +188,11 @@ BTN_W      = PANEL_FRAC - 0.01
 BTN_H      = 0.032
 
 fig = plt.figure(figsize=(23, 10), facecolor="#0d1117")
-try:
-    fig.canvas.manager.set_window_title(f"Brain Viewer — {SPLIT}")
-except Exception:
-    pass
+if not SAVE_MODE:
+    try:
+        fig.canvas.manager.set_window_title(f"Brain Viewer — {SPLIT}")
+    except Exception:
+        pass
 
 panel_ax = fig.add_axes([0.003, BOTTOM, PANEL_FRAC - 0.006, TOP - BOTTOM])
 panel_ax.set_facecolor("#161b22")
@@ -228,18 +232,19 @@ def _rebuild_slider(host_ax, label, dim, init_val):
     return sl
 
 
-btns = []
-for by, bl in [(SL_BOT + 0.10, "All ON"), (SL_BOT + 0.06, "All OFF"),
-               (SL_BOT + 0.02, f"Split: {SPLIT}")]:
-    bax = fig.add_axes([BTN_X, by, BTN_W, BTN_H], facecolor="#21262d")
-    b   = Button(bax, bl, color="#21262d", hovercolor="#30363d")
-    b.label.set_color("#e6edf3"); b.label.set_fontsize(8)
-    btns.append(b)
-btn_all_on, btn_all_off, btn_split = btns
+if not SAVE_MODE:
+    btns = []
+    for by, bl in [(SL_BOT + 0.10, "All ON"), (SL_BOT + 0.06, "All OFF"),
+                   (SL_BOT + 0.02, f"[{SPLIT}]")]:
+        bax = fig.add_axes([BTN_X, by, BTN_W, BTN_H], facecolor="#21262d")
+        b   = Button(bax, bl, color="#21262d", hovercolor="#30363d")
+        b.label.set_color("#e6edf3"); b.label.set_fontsize(8)
+        btns.append(b)
+    btn_all_on, btn_all_off, _ = btns
 
 # ── panel ─────────────────────────────────────────────────────────────────────
-ROW_H  = 1.0
-HDR_H  = 1.3
+ROW_H         = 1.0
+HDR_H         = 1.3
 PANEL_TOTAL_H = N_LABELS * ROW_H + N_HEADERS * HDR_H + 1.5
 SWATCH_X = 0.02; SWATCH_W = 0.07
 CHECK_X  = 0.125
@@ -278,8 +283,7 @@ def rebuild_panel():
             transform=panel_ax.transData, clip_on=True,
         )
         panel_ax.add_patch(sw)
-        panel_ax.text(CHECK_X, y + 0.05,
-                      "✓" if active else "·",
+        panel_ax.text(CHECK_X, y + 0.05, "✓" if active else "·",
                       fontsize=7, color="#58a6ff" if active else "#30363d",
                       va="center", ha="center", transform=panel_ax.transData)
         txt = panel_ax.text(TEXT_X, y + 0.05,
@@ -293,7 +297,8 @@ def rebuild_panel():
         y -= ROW_H
 
     panel_ax.set_title("LABELS", color="#8b949e", fontsize=7, pad=3, loc="left")
-    fig.canvas.draw_idle()
+    if not SAVE_MODE:
+        fig.canvas.draw_idle()
 
 
 def on_panel_pick(event):
@@ -303,7 +308,8 @@ def on_panel_pick(event):
     rebuild_panel()
     update(None)
 
-fig.canvas.mpl_connect("pick_event", on_panel_pick)
+if not SAVE_MODE:
+    fig.canvas.mpl_connect("pick_event", on_panel_pick)
 
 # ── overlay ───────────────────────────────────────────────────────────────────
 def make_overlay(seg: np.ndarray) -> np.ndarray:
@@ -345,7 +351,6 @@ def update(val):
         ax.set_facecolor("#0d1117")
         ax.set_xticks([]); ax.set_yticks([])
 
-    # Sagittal
     sag_img = np.rot90(image    [xi, :, :])
     sag_seg = np.rot90(label_vol[xi, :, :])
     asp_sag = sz_mm / sy_mm
@@ -354,7 +359,6 @@ def update(val):
     _crosshair(ax_sag, nz - 1 - zi, yi, COL_AXI, COL_COR, nz, ny)
     ax_sag.set_title(f"Sagittal   x = {xi}", fontsize=8.5, color="#8b949e", pad=3)
 
-    # Coronal
     cor_img = np.rot90(image    [:, yi, :])
     cor_seg = np.rot90(label_vol[:, yi, :])
     asp_cor = sz_mm / sx_mm
@@ -363,7 +367,6 @@ def update(val):
     _crosshair(ax_cor, nz - 1 - zi, xi, COL_AXI, COL_SAG, nz, nx)
     ax_cor.set_title(f"Coronal    y = {yi}", fontsize=8.5, color="#8b949e", pad=3)
 
-    # Axial
     axi_img = np.rot90(image    [:, :, zi])
     axi_seg = np.rot90(label_vol[:, :, zi])
     asp_axi = sy_mm / sx_mm
@@ -372,7 +375,6 @@ def update(val):
     _crosshair(ax_axi, ny - 1 - yi, xi, COL_COR, COL_SAG, ny, nx)
     ax_axi.set_title(f"Axial      z = {zi}", fontsize=8.5, color="#8b949e", pad=3)
 
-    # legend
     shown   = sorted(active_labels)[:20]
     patches = [mpatches.Patch(color=COLORS[l], label=f"{l:>2} {LABEL_DICT[l][:18]}")
                for l in shown]
@@ -383,12 +385,12 @@ def update(val):
                       labelcolor="#dde4ee", ncol=1, handlelength=1.1,
                       borderpad=0.4, labelspacing=0.25)
 
-    # crosshair colour key
-    fig.texts = [t for t in fig.texts if not getattr(t, "_ch_key", False)]
-    t = fig.text(VIEW_LEFT, BOTTOM - 0.025,
-                 f"  ╌╌ Coronal Y   ╌╌ Axial Z   ╌╌ Sagittal X   ✛ intersection",
-                 fontsize=6, color="#8b949e")
-    t._ch_key = True
+    if not SAVE_MODE:
+        fig.texts = [t for t in fig.texts if not getattr(t, "_ch_key", False)]
+        t = fig.text(VIEW_LEFT, BOTTOM - 0.025,
+                     "  ╌╌ Coronal Y   ╌╌ Axial Z   ╌╌ Sagittal X   ✛ intersection",
+                     fontsize=6, color="#8b949e")
+        t._ch_key = True
 
     has_label = label_files[current_case] is not None
     fig.suptitle(
@@ -398,15 +400,15 @@ def update(val):
         fontsize=9.5, color="#58a6ff",
         y=0.992, x=VIEW_LEFT + VIEWS_W / 2,
     )
-    fig.canvas.draw_idle()
+    if not SAVE_MODE:
+        fig.canvas.draw_idle()
 
 # ── load case ─────────────────────────────────────────────────────────────────
 def load_case(idx):
-    global image, label_vol, sx_mm, sy_mm, sz_mm
-    global sx, sy, sz
+    global image, label_vol, sx_mm, sy_mm, sz_mm, sx, sy, sz
 
-    nii           = nib.load(image_files[idx])
-    image         = nii.get_fdata()
+    nii               = nib.load(image_files[idx])
+    image             = nii.get_fdata()
     sx_mm, sy_mm, sz_mm = nii.header.get_zooms()[:3]
 
     if label_files[idx] is not None:
@@ -418,100 +420,115 @@ def load_case(idx):
     sx = _rebuild_slider(sl_sag_ax, f"Sagittal [0-{nx-1}]", nx, nx // 2)
     sy = _rebuild_slider(sl_cor_ax, f"Coronal  [0-{ny-1}]", ny, ny // 2)
     sz = _rebuild_slider(sl_axi_ax, f"Axial    [0-{nz-1}]", nz, nz // 2)
-    sx.on_changed(update)
-    sy.on_changed(update)
-    sz.on_changed(update)
+
+    if not SAVE_MODE:
+        sx.on_changed(update)
+        sy.on_changed(update)
+        sz.on_changed(update)
+
     update(None)
 
-# ── button callbacks ──────────────────────────────────────────────────────────
-def cb_all_on(event):
-    active_labels.update(LABEL_DICT.keys())
-    rebuild_panel(); update(None)
-
-def cb_all_off(event):
-    active_labels.clear()
-    rebuild_panel(); update(None)
-
-btn_all_on.on_clicked(cb_all_on)
-btn_all_off.on_clicked(cb_all_off)
-
-# ── keyboard ──────────────────────────────────────────────────────────────────
-def on_key(event):
-    global current_case, active_labels
-
-    if event.key == "right":
-        current_case = (current_case + 1) % len(image_files)
-        load_case(current_case)
-    elif event.key == "left":
-        current_case = (current_case - 1) % len(image_files)
-        load_case(current_case)
-    elif event.key == "a":
-        cb_all_on(None)
-    elif event.key == "n":
-        cb_all_off(None)
-    elif event.key == "h":
-        # Hippocampus: idx 14 (Left), 30 (Right)
-        for l in (14, 30):
-            active_labels.symmetric_difference_update({l})
-        rebuild_panel(); update(None)
-    elif event.key == "v":
-        # Ventricles: 3, 4, 11, 12, 16, 22, 23, 35
-        for l in (3, 4, 11, 12, 16, 22, 23, 35):
-            active_labels.symmetric_difference_update({l})
-        rebuild_panel(); update(None)
-    elif event.key == "c":
-        # Cortex: 2 (Left Cerebral Cortex), 21 (Right Cerebral Cortex)
-        for l in (2, 21):
-            active_labels.symmetric_difference_update({l})
-        rebuild_panel(); update(None)
-    elif event.key == "1":
-        # White Matter
-        active_labels = {1, 5, 20, 24}
-        rebuild_panel(); update(None)
-    elif event.key == "2":
-        # Gray Matter
-        active_labels = {2, 6, 7, 8, 9, 10, 14, 15, 17,
-                         21, 25, 26, 27, 28, 29, 30, 31, 32}
-        rebuild_panel(); update(None)
-    elif event.key == "3":
-        # CSF / Ventricles
-        active_labels = {3, 4, 11, 12, 16, 22, 23, 35}
+# ── button callbacks (interactive only) ───────────────────────────────────────
+if not SAVE_MODE:
+    def cb_all_on(event):
+        active_labels.update(LABEL_DICT.keys())
         rebuild_panel(); update(None)
 
-fig.canvas.mpl_connect("key_press_event", on_key)
+    def cb_all_off(event):
+        active_labels.clear()
+        rebuild_panel(); update(None)
 
-# ── scroll zoom ───────────────────────────────────────────────────────────────
-def on_scroll(event):
-    ax = event.inaxes
-    if ax not in (ax_sag, ax_cor, ax_axi):
-        return
-    f  = 0.85 if event.button == "up" else 1.15
-    cx = np.mean(ax.get_xlim()); cy = np.mean(ax.get_ylim())
-    rx = (ax.get_xlim()[1] - ax.get_xlim()[0]) * f / 2
-    ry = (ax.get_ylim()[1] - ax.get_ylim()[0]) * f / 2
-    ax.set_xlim(cx - rx, cx + rx)
-    ax.set_ylim(cy - ry, cy + ry)
-    fig.canvas.draw_idle()
+    btn_all_on.on_clicked(cb_all_on)
+    btn_all_off.on_clicked(cb_all_off)
 
-fig.canvas.mpl_connect("scroll_event", on_scroll)
+# ── keyboard (interactive only) ───────────────────────────────────────────────
+if not SAVE_MODE:
+    def on_key(event):
+        global current_case, active_labels
+
+        if event.key == "right":
+            current_case = (current_case + 1) % len(image_files)
+            load_case(current_case)
+        elif event.key == "left":
+            current_case = (current_case - 1) % len(image_files)
+            load_case(current_case)
+        elif event.key == "a":
+            cb_all_on(None)
+        elif event.key == "n":
+            cb_all_off(None)
+        elif event.key == "h":
+            # Left Hippocampus=17, Right Hippocampus=53
+            for l in (17, 53):
+                active_labels.symmetric_difference_update({l})
+            rebuild_panel(); update(None)
+        elif event.key == "v":
+            # Ventricles: 4,5,14,15,43,44,72
+            for l in (4, 5, 14, 15, 43, 44, 72):
+                active_labels.symmetric_difference_update({l})
+            rebuild_panel(); update(None)
+        elif event.key == "c":
+            # Left Cortex=3, Right Cortex=42
+            for l in (3, 42):
+                active_labels.symmetric_difference_update({l})
+            rebuild_panel(); update(None)
+        elif event.key == "1":
+            active_labels = {2, 7, 41, 46}   # White Matter
+            rebuild_panel(); update(None)
+        elif event.key == "2":
+            active_labels = {3, 8, 10, 11, 12, 13, 17, 18, 26,
+                             42, 47, 49, 50, 51, 52, 53, 54, 58}   # Gray Matter
+            rebuild_panel(); update(None)
+        elif event.key == "3":
+            active_labels = {4, 5, 14, 15, 24, 43, 44, 72}   # CSF / Ventricles
+            rebuild_panel(); update(None)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+
+# ── scroll zoom (interactive only) ────────────────────────────────────────────
+if not SAVE_MODE:
+    def on_scroll(event):
+        ax = event.inaxes
+        if ax not in (ax_sag, ax_cor, ax_axi):
+            return
+        f  = 0.85 if event.button == "up" else 1.15
+        cx = np.mean(ax.get_xlim()); cy = np.mean(ax.get_ylim())
+        rx = (ax.get_xlim()[1] - ax.get_xlim()[0]) * f / 2
+        ry = (ax.get_ylim()[1] - ax.get_ylim()[0]) * f / 2
+        ax.set_xlim(cx - rx, cx + rx)
+        ax.set_ylim(cy - ry, cy + ry)
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("scroll_event", on_scroll)
 
 # ── start ─────────────────────────────────────────────────────────────────────
 rebuild_panel()
-print("載入第一個 case，請稍候... (loading first case)", flush=True)
-load_case(current_case)
-print("完成，視窗已開啟。", flush=True)
 
-print(f"\n── Brain Viewer  [{SPLIT.upper()}]  {len(image_files)} cases ──")
-print("  ← / →   : switch case")
-print("  A / N   : all labels ON / OFF")
-print("  H       : hippocampus (L+R)")
-print("  V       : ventricles")
-print("  C       : cortex (L+R)")
-print("  1       : White Matter")
-print("  2       : Gray Matter")
-print("  3       : CSF / Ventricles")
-print("  Scroll  : zoom in/out on a view")
-print("  Click   : toggle label in panel")
-print("──────────────────────────────────────\n")
-
-plt.show()
+if SAVE_MODE:
+    # ── headless: render one case and save PNG ────────────────────────────────
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    idx = min(args.case, len(image_files) - 1)
+    sid = Path(image_files[idx]).name.replace("_0000.nii.gz", "")
+    print(f"Rendering case {idx} ({sid}) ...", flush=True)
+    load_case(idx)
+    out = save_dir / f"{SPLIT}_{sid}_case{idx:04d}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="#0d1117")
+    print(f"Saved → {out}")
+else:
+    # ── interactive ───────────────────────────────────────────────────────────
+    print("載入第一個 case，請稍候... (loading first case)", flush=True)
+    load_case(current_case)
+    print("完成，視窗已開啟。", flush=True)
+    print(f"\n── Brain Viewer  [{SPLIT.upper()}]  {len(image_files)} cases ──")
+    print("  ← / →   : switch case")
+    print("  A / N   : all labels ON / OFF")
+    print("  H       : hippocampus (L+R)")
+    print("  V       : ventricles")
+    print("  C       : cortex (L+R)")
+    print("  1       : White Matter")
+    print("  2       : Gray Matter")
+    print("  3       : CSF / Ventricles")
+    print("  Scroll  : zoom in/out")
+    print("  Click   : toggle label in panel")
+    print("──────────────────────────────────────\n")
+    plt.show()
