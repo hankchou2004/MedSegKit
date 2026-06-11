@@ -10,7 +10,7 @@ from __future__ import annotations
 from monai.networks.nets import (
     UNet,
     BasicUNetPlusPlus,
-    AttentionUNet,
+    AttentionUnet,
     DynUNet,
     SwinUNETR,
     MedNeXt,
@@ -58,7 +58,7 @@ class UNetPP3D(BasicUNetPlusPlus):
 
 
 @register_model("attention_unet")
-class AttentionUNet3D(AttentionUNet):
+class AttentionUNet3D(AttentionUnet):
     def __init__(self, in_channels: int = 1, out_channels: int = 36, **kw):
         super().__init__(
             spatial_dims=3,
