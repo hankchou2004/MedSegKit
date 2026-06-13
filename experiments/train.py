@@ -18,7 +18,7 @@ from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
 )
-from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
 from medsegkit.data.oasis_module import OasisDataModule
 from medsegkit.data.btcv_module import BTCVDataModule
@@ -39,13 +39,14 @@ def build_datamodule(cfg: dict):
 
 
 def build_logger(cfg: dict):
-    exp = cfg.get("experiment", {})
+    exp     = cfg.get("experiment", {})
     log_dir = exp.get("log_dir", "./logs")
     name    = exp.get("name", "medsegkit")
-    try:
+    logger  = exp.get("logger", "tensorboard")
+
+    if logger == "wandb":
         return WandbLogger(project="MedSegKit", name=name, save_dir=log_dir)
-    except Exception:
-        return TensorBoardLogger(save_dir=log_dir, name=name)
+    return TensorBoardLogger(save_dir=log_dir, name=name)
 
 
 def train_seg(cfg: dict, gpus: int):
